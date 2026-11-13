@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Side Panel Lifecycle Probe</title>
+<style>
+  body { font: 12px/1.4 -apple-system, system-ui, sans-serif; margin: 8px; color: #222; }
+  h1 { font-size: 14px; margin: 0 0 6px; }
+  .bar { display: flex; gap: 6px; margin-bottom: 8px; flex-wrap: wrap; }
+  button { font: inherit; padding: 3px 8px; }
+  #status { font-size: 11px; color: #555; margin-bottom: 6px; }
+  .load { border-top: 2px solid #999; margin-top: 8px; padding-top: 4px; font-weight: 600; }
+  .row { font-family: ui-monospace, Menlo, monospace; font-size: 11px; padding: 2px 0; border-bottom: 1px solid #eee; word-break: break-all; }
+  .destroy { background: #fde2e2; }
+  .hidden { background: #fff4d6; }
+  .visible { background: #e2f5e2; }
+  .setup, .context { background: #e3ecfb; }
+  .self { color: #888; }
+</style>
+</head>
+<body>
+<h1>Side Panel Lifecycle Probe</h1>
+<div id="status"></div>
+<div class="bar">
+  <button id="copy">Copy log (JSON)</button>
+  <button id="clear">Clear log</button>
+</div>
+<div id="log"></div>
+
+<script>
+(function () {
+  var KEY = 'sp-probe-log-v1';
+  var LOAD_ID = Math.random().toString(36).slice(2, 8);
+  var mem = [];
+  var storageOk = true;
+
+  function read() {
+    try { return JSON.parse(localStorage.getItem(KEY) || '[]'); }
+    catch (e) { storageOk = false; return mem; }
+  }
+  function write(arr) {
+    try { localStorage.setItem(KEY, JSON.stringify(arr.slice(-500))); }
+    catch (e) { storageOk = false; mem = arr; }
+  }
+  function now() {
+    var d = new Date();
+    return d.toISOString().replace('T', ' ').replace('Z', '');
+  }
+  function add(entry) {
+    entry.t = now();
+    entry.perf = Math.round(performance.now());
+    entry.load = LOAD_ID;
+    var arr = read();
+    arr.push(entry);
+    write(arr);
+    render();
+  }
+
+  function render() {
+    var arr = read().slice().reverse();
+    var el = document.getElementById('log');
+    var html = '';
+    var lastLoad = null;
+    arr.forEach(function (e) {
+      if (e.load !== lastLoad) {
+        html += '<div class="load">load ' + e.load + (e.load === LOAD_ID ? ' (current)' : '') + '</div>';
+        lastLoad = e.load;
+      }
+      var cls = e.kind === 'message' ? String(e.type || '').split(':').pop() : 'self';
+      html += '<div class="row ' + cls + '">' + e.t + ' [' + e.kind + '] ' +
+        escapeHtml(e.type || '') + ' ' + escapeHtml(e.detail || '') + '</div>';
+    });
+    el.innerHTML = html;
+    document.getElementById('status').textContent =
+      'load=' + LOAD_ID + ' | referrer=' + (document.referrer || '(none)') +
+      ' | storage=' + (storageOk ? 'ok' : 'BLOCKED (in-memory only)') +
+      ' | entries=' + read().length;
+  }
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"]/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c];
+    });
+  }
+
+  // Every message from any origin, verbatim, so nothing undocumented is missed.
+  window.addEventListener('message', function (event) {
+    var data = event.data;
+    var type = data && typeof data === 'object' ? data.type : typeof data;
+    var detail;
+    try { detail = 'origin=' + event.origin + ' data=' + JSON.stringify(data); }
+    catch (e) { detail = 'origin=' + event.origin + ' data=(unserializable)'; }
+    add({ kind: 'message', type: type, detail: detail });
+  });
+
+  // The iframe's own lifecycle, to see whether it unloads after destroy.
+  ['pagehide', 'beforeunload', 'unload'].forEach(function (name) {
+    window.addEventListener(name, function () { add({ kind: 'self', type: name, detail: '' }); });
+  });
+  document.addEventListener('visibilitychange', function () {
+    add({ kind: 'self', type: 'visibilitychange', detail: document.visibilityState });
+  });
+
+  var navType = (performance.getEntriesByType('navigation')[0] || {}).type || 'unknown';
+  add({ kind: 'self', type: 'load', detail: 'navType=' + navType + ' referrer=' + document.referrer + ' url=' + location.href });
+
+  // Ask the host for context, using the referrer origin so any region works.
+  if (document.referrer && window.parent !== window) {
+    var parentOrigin = new URL(document.referrer).origin;
+    window.parent.postMessage({ type: 'initialize' }, parentOrigin);
+    add({ kind: 'self', type: 'sent initialize', detail: 'to ' + parentOrigin });
+  }
+
+  document.getElementById('clear').onclick = function () { write([]); mem = []; render(); };
+  document.getElementById('copy').onclick = function () {
+    var text = JSON.stringify(read(), null, 2);
+    if (navigator.clipboard) { navigator.clipboard.writeText(text).catch(function () { prompt('Copy:', text); }); }
+    else { prompt('Copy:', text); }
+  };
+  render();
+})();
+</script>
+</body>
+</html>
